@@ -68,30 +68,6 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           
-      - name: Add PR comment with scan result
-        continue-on-error: true
-        run: |
-          if grep -E '(CRITICAL)' trivy-misconf-report.txt;
-          then
-            gh pr comment ${{ github.event.pull_request.number }} --body $'### 🔴🔴🔴 Trivy results 🔴🔴🔴\n CRITICAL severity misconfiguration issues detected.\n Please refer to the GH Action summary to get the full list of issues.\n'
-          elif grep -E '(HIGH)' trivy-misconf-report.txt;
-          then
-            gh pr comment ${{ github.event.pull_request.number }} --body $'### 🟠🟠🟠 Trivy results 🟠🟠🟠\n HIGH severity misconfiguration issues detected.\n Please refer to the GH Action summary to get the full list of issues.\n'
-          elif grep -E '(MEDIUM)' trivy-misconf-report.txt;
-          then
-            gh pr comment ${{ github.event.pull_request.number }} --body $'### 🟡🟡🟡 Trivy results 🟡🟡🟡\n MEDIUM severity misconfiguration issues detected.\n Please refer to the GH Action summary to get the full list of issues.\n'
-          elif grep -E '(LOW)' trivy-misconf-report.txt;
-          then
-            gh pr comment ${{ github.event.pull_request.number }} --body $'### 🔵🔵🔵 Trivy results 🔵🔵🔵\n LOW severity misconfiguration issues detected.\n Please refer to the GH Action summary to get the full list of issues.\n'
-          elif grep -E '(UNKNOWN)' trivy-misconf-report.txt;
-          then
-            gh pr comment ${{ github.event.pull_request.number }} --body $'### ⚫⚫⚫ Trivy results ⚫⚫⚫\n UNKNOWN severity misconfiguration issues detected.\n Please refer to the GH Action summary to get the full list of issues.\n'
-          else
-            gh pr comment ${{ github.event.pull_request.number }} --body $'### 🟢🟢🟢 Trivy results 🟢🟢🟢\n, No misconfiguration issues detected.\n'
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
-
       - name: Halt on medium, high, or critical misconfigurations
         run: |
           if grep -E '(CRITICAL|HIGH|MEDIUM)' trivy-misconf-report.txt; then
