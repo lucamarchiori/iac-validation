@@ -1,0 +1,156 @@
+name: Misconfigurations detection
+on: workflow_dispatch
+
+jobs:
+  kubeconform:
+    name: Kubeconform validation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+       # Filter Kubernetes manifests to ./filtered-manifests to apply K8S validation only on those
+      - name: Filter Kubernetes manifests
+        run: |
+          mkdir filtered-manifests
+          # Find YAMLs with both apiVersion and kind likely at top level, copy them
+          find . \( -name '*.yml' -o -name '*.yaml' \) -type f \
+            -exec sh -c '
+              for f; do
+                if grep -qE "^apiVersion:" "$f" && grep -qE "^kind:" "$f"; then
+                  # Remove leading ./ to get path-relative (optional)
+                  relf="${f#./}"
+                  mkdir -p "filtered-manifests/$(dirname "$relf")"
+                  cp "$f" "filtered-manifests/$relf"
+                fi 
+              done
+            ' _ {} +
+
+      - name: Run K8S misconfiguration checks (Kubeconform)
+        continue-on-error: false
+        uses: docker://ghcr.io/yannh/kubeconform:latest
+        with:
+          entrypoint: '/kubeconform'
+          args: "-summary -ignore-missing-schemas -output json ./filtered-manifests"
+
+      - name: Delete filtered manifests
+        run: rm -rf ./filtered-manifests
+
+  trivy:
+    name: Trivy validation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run misconfiguration checks (Trivy)
+        uses: aquasecurity/trivy-action@0.30.0
+        id: trivy-scan
+        continue-on-error: true
+        with:
+          scan-type: 'fs'
+          output: trivy-misconf-report.txt
+          trivy-config: ${{ github.workspace }}/.github/trivy-config.yaml
+
+      - name: Publish Trivy Output to Console
+        continue-on-error: true
+        run: cat trivy-misconf-report.txt
+          
+      - name: Publish Trivy Output to Summary
+        continue-on-error: true
+        run: |
+          if [[ -s trivy-misconf-report.txt ]]; then
+            {
+              echo "### Trivy Misconfiguration Output"
+              echo '```'
+              cat trivy-misconf-report.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          
+      - name: Add PR comment with scan result
+        continue-on-error: true
+        run: |
+          if grep -E '(CRITICAL)' trivy-misconf-report.txt;
+          then
+            gh pr comment ${{ github.event.pull_request.number }} --body $'### 🔴🔴🔴 Trivy results 🔴🔴🔴\n CRITICAL severity misconfiguration issues detected.\n Please refer to the GH Action summary to get the full list of issues.\n'
+          elif grep -E '(HIGH)' trivy-misconf-report.txt;
+          then
+            gh pr comment ${{ github.event.pull_request.number }} --body $'### 🟠🟠🟠 Trivy results 🟠🟠🟠\n HIGH severity misconfiguration issues detected.\n Please refer to the GH Action summary to get the full list of issues.\n'
+          elif grep -E '(MEDIUM)' trivy-misconf-report.txt;
+          then
+            gh pr comment ${{ github.event.pull_request.number }} --body $'### 🟡🟡🟡 Trivy results 🟡🟡🟡\n MEDIUM severity misconfiguration issues detected.\n Please refer to the GH Action summary to get the full list of issues.\n'
+          elif grep -E '(LOW)' trivy-misconf-report.txt;
+          then
+            gh pr comment ${{ github.event.pull_request.number }} --body $'### 🔵🔵🔵 Trivy results 🔵🔵🔵\n LOW severity misconfiguration issues detected.\n Please refer to the GH Action summary to get the full list of issues.\n'
+          elif grep -E '(UNKNOWN)' trivy-misconf-report.txt;
+          then
+            gh pr comment ${{ github.event.pull_request.number }} --body $'### ⚫⚫⚫ Trivy results ⚫⚫⚫\n UNKNOWN severity misconfiguration issues detected.\n Please refer to the GH Action summary to get the full list of issues.\n'
+          else
+            gh pr comment ${{ github.event.pull_request.number }} --body $'### 🟢🟢🟢 Trivy results 🟢🟢🟢\n, No misconfiguration issues detected.\n'
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Halt on medium, high, or critical misconfigurations
+        run: |
+          if grep -E '(CRITICAL|HIGH|MEDIUM)' trivy-misconf-report.txt; then
+            echo "::error::Medium, high, or critical misconfigurations found. Please fix them before merging."
+            exit 1
+          else
+            echo "No medium, high, or critical misconfigurations found."
+          fi
+
+  terragrunt:
+    name: Terragrunt validation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Tofu and Terragrunt
+        run: |
+          # Install OpenTofu (extract from .tar.gz)
+          curl -L https://github.com/opentofu/opentofu/releases/download/v1.8.1/tofu_1.8.1_linux_amd64.tar.gz -o tofu.tar.gz
+          tar -xzf tofu.tar.gz tofu
+          chmod +x tofu
+          sudo mv tofu /usr/local/bin/tofu
+
+          # Symlink tofu as terraform
+          sudo ln -sf /usr/local/bin/tofu /usr/local/bin/terraform
+
+          # Install Terragrunt
+          curl -L https://github.com/gruntwork-io/terragrunt/releases/download/v0.67.0/terragrunt_linux_amd64 -o terragrunt
+          chmod +x terragrunt
+          sudo mv terragrunt /usr/local/bin/terragrunt
+
+      - name: Validate Terragrunt configurations
+        id: validate
+        continue-on-error: true
+        run: terragrunt hclfmt --terragrunt-check --terragrunt-log-level error > terragrunt-misconf-report.txt 2>&1
+
+      - name: Publish Error Output to Summary
+        if: steps.validate.outcome != 'success'
+        continue-on-error: true
+        run: |
+          if [[ -s terragrunt-misconf-report.txt ]]; then
+            echo "### Terragrunt Misconfiguration Output" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat terragrunt-misconf-report.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publish Success Output to Summary
+        if: steps.validate.outcome == 'success'
+        continue-on-error: true
+        run: |
+            echo "### Terragrunt Misconfiguration Output" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "No misconfigurations detected" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Halt on misconfigurations
+        if: steps.validate.outcome != 'success'
+        run: |
+          echo "::error::Misconfigurations found. Please fix them before merging."
+          exit 1

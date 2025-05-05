@@ -1,0 +1,20 @@
+format: table
+severity:
+  - CRITICAL
+  - HIGH
+  - MEDIUM
+  - LOW
+  - UNKNOWN
+scan:
+  scanners:
+    - misconfig
+    - secret
+
+  security-checks:
+    - config
+    - secret
+
+misconfiguration:
+  trace: true
+
+report: all
