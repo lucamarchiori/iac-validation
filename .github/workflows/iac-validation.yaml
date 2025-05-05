@@ -1,5 +1,5 @@
 name: Misconfigurations detection
-on: workflow_dispatch
+on: workflow_call
 
 jobs:
   kubeconform:
